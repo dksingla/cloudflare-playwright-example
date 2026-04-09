@@ -13,16 +13,19 @@ This example demonstrates how to run Playwright tests in a Cloudflare Worker usi
 ## Setup
 
 1. Install dependencies:
+
 ```bash
 npm ci
 ```
 
 2. Build the project:
+
 ```bash
 npm run build
 ```
 
 3. Deploy to Cloudflare Workers:
+
 ```bash
 npm run deploy
 ```
@@ -32,9 +35,11 @@ npm run deploy
 Once deployed, you can interact with the Worker using these URL patterns:
 
 ### Capture Screenshot
+
 ```
 https://<your-worker>.workers.dev
 ```
+
 Returns a screenshot of the TodoMVC app with default todo items.
 
 ### Generate Trace
@@ -46,6 +51,8 @@ https://trace.playwright.dev/?trace=https://<your-worker>.workers.dev
 ```
 
 To download the trace, use the following URL:
+
 ```
 https://<your-worker>.workers.dev?trace
+
 ```
