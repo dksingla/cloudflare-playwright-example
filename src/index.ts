@@ -76,6 +76,30 @@ async function gotoWithRetries(
   throw new Error(`Failed to navigate after 3 attempts: ${message}`);
 }
 
+async function launchWithRetries(
+  env: Env,
+): Promise<import("@cloudflare/playwright").Browser> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      // keep_alive reduces repeated cold-start/acquire churn for short bursts
+      return await launch(env.MYBROWSER, {
+        keep_alive: 120_000,
+        recording: false,
+      });
+    } catch (err: unknown) {
+      lastError = err;
+      // If Browser Rendering is temporarily overloaded/unavailable, back off briefly.
+      await new Promise((r) => setTimeout(r, 1_500 * (attempt + 1)));
+    }
+  }
+
+  const message =
+    lastError instanceof Error ? lastError.message : "Unknown error";
+  throw new Error(`Failed to launch browser after 3 attempts: ${message}`);
+}
+
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
@@ -104,7 +128,7 @@ export default {
       );
     }
 
-    const browser = await launch(env.MYBROWSER);
+    const browser = await launchWithRetries(env);
     const context = await browser.newContext({
       userAgent: DEFAULT_USER_AGENT,
       locale: "en-US",
