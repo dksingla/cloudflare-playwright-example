@@ -11,5 +11,5 @@ enabled = true
 enabled = true
 invocation_logs = true
 
-[[browser]]
+[browser]
 binding = "MYBROWSER"
