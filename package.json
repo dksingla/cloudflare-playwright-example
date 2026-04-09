@@ -1,12 +1,8 @@
 {
   "name": "cloudflare-playwright-example",
   "version": "1.0.0",
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "scripts": {
-    "build": "tsc",
+    "build": "wrangler deploy",
     "dev": "CI=1 wrangler dev",
     "deploy": "wrangler deploy"
   },
