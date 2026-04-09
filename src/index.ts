@@ -51,6 +51,13 @@ function isValidHttpUrl(value: string): boolean {
   }
 }
 
+function isBrowserRateLimitErrorMessage(message: string): boolean {
+  return (
+    message.includes("code: 429") ||
+    message.toLowerCase().includes("rate limit exceeded")
+  );
+}
+
 async function gotoWithRetries(
   page: import("@cloudflare/playwright").Page,
   targetUrl: string,
@@ -113,8 +120,24 @@ async function launchWithRetries(
       return browser;
     } catch (err: unknown) {
       lastError = err;
-      // If Browser Rendering is temporarily overloaded/unavailable, back off briefly.
-      await new Promise((r) => setTimeout(r, 1_500 * (attempt + 1)));
+      const message = err instanceof Error ? err.message : String(err);
+      const isRateLimit =
+        message.includes("code: 429") ||
+        message.toLowerCase().includes("rate limit");
+      const backoffMs = isRateLimit
+        ? 10_000 * (attempt + 1)
+        : 1_500 * (attempt + 1);
+      console.warn(
+        JSON.stringify({
+          at: "browser.launch.retry",
+          attempt: attempt + 1,
+          isRateLimit,
+          backoffMs,
+          message,
+        }),
+      );
+      // If Browser Rendering is temporarily overloaded/unavailable, back off.
+      await new Promise((r) => setTimeout(r, backoffMs));
     }
   }
 
@@ -224,7 +247,37 @@ export default {
       );
     }
 
-    const browser = await launchWithRetries(env);
+    let browser: import("@cloudflare/playwright").Browser | null = null;
+    try {
+      browser = await launchWithRetries(env);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      const isRateLimited = isBrowserRateLimitErrorMessage(message);
+      if (isRateLimited) {
+        console.warn(
+          JSON.stringify({
+            at: "browser.rate_limited",
+            requestId,
+            message,
+          }),
+        );
+        return jsonResponseWithRequestId(
+          {
+            error: "Browser Rendering rate limited; retry later",
+            message,
+          },
+          requestId,
+          {
+            status: 429,
+            headers: {
+              // We don't get an exact retry time from acquire() errors, so give a sane default.
+              "Retry-After": "15",
+            },
+          },
+        );
+      }
+      throw err;
+    }
     const context = await browser.newContext({
       userAgent: DEFAULT_USER_AGENT,
       locale: "en-US",
@@ -340,7 +393,7 @@ export default {
       });
     } finally {
       await context.close();
-      await browser.close();
+      if (browser) await browser.close();
     }
   },
 };
