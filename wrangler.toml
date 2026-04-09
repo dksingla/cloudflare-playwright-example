@@ -4,5 +4,12 @@ workers_dev = true
 compatibility_date = "2026-04-09"
 compatibility_flags = ["nodejs_compat"]
 
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[observability.traces]
+
 [browser]
 binding = "MYBROWSER"

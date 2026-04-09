@@ -1,4 +1,4 @@
-import { launch } from "@cloudflare/playwright";
+import { launch, limits } from "@cloudflare/playwright";
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -15,6 +15,20 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   headers.set("Content-Type", "application/json; charset=utf-8");
   for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
   return new Response(JSON.stringify(body), { ...init, headers });
+}
+
+function withRequestId(headers: Headers, requestId: string): void {
+  headers.set("X-Request-Id", requestId);
+}
+
+function jsonResponseWithRequestId(
+  body: unknown,
+  requestId: string,
+  init?: ResponseInit,
+): Response {
+  const headers = new Headers(init?.headers);
+  withRequestId(headers, requestId);
+  return jsonResponse(body, { ...init, headers });
 }
 
 function looksLikeCloudflareChallenge(html: string): boolean {
@@ -83,11 +97,20 @@ async function launchWithRetries(
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      const started = Date.now();
       // keep_alive reduces repeated cold-start/acquire churn for short bursts
-      return await launch(env.MYBROWSER, {
+      const browser = await launch(env.MYBROWSER, {
         keep_alive: 120_000,
         recording: false,
       });
+      console.log(
+        JSON.stringify({
+          at: "browser.launch.ok",
+          attempt: attempt + 1,
+          durationMs: Date.now() - started,
+        }),
+      );
+      return browser;
     } catch (err: unknown) {
       lastError = err;
       // If Browser Rendering is temporarily overloaded/unavailable, back off briefly.
@@ -102,6 +125,8 @@ async function launchWithRetries(
 
 export default {
   async fetch(request: Request, env: Env) {
+    const requestId = crypto.randomUUID();
+    const requestStarted = Date.now();
     const url = new URL(request.url);
 
     if (url.pathname !== "/") return new Response(null, { status: 404 });
@@ -111,20 +136,91 @@ export default {
     }
 
     if (request.method !== "GET") {
-      return jsonResponse({ error: "Method not allowed" }, { status: 405 });
+      return jsonResponseWithRequestId(
+        { error: "Method not allowed" },
+        requestId,
+        { status: 405 },
+      );
     }
 
     const targetUrl = url.searchParams.get("url");
     if (!targetUrl) {
-      return jsonResponse(
+      return jsonResponseWithRequestId(
         { error: "Missing ?url= parameter" },
+        requestId,
         { status: 400 },
       );
     }
     if (!isValidHttpUrl(targetUrl)) {
-      return jsonResponse(
+      return jsonResponseWithRequestId(
         { error: "Invalid url (must be http/https)" },
+        requestId,
         { status: 400 },
+      );
+    }
+
+    console.log(
+      JSON.stringify({
+        at: "request.start",
+        requestId,
+        method: request.method,
+        targetUrl,
+      }),
+    );
+
+    // Surface Browser Rendering limits in logs and avoid predictable timeouts.
+    try {
+      const l = await limits(env.MYBROWSER);
+      console.log(
+        JSON.stringify({
+          at: "browser.limits",
+          requestId,
+          activeSessions: l.activeSessions.length,
+          maxConcurrentSessions: l.maxConcurrentSessions,
+          allowedBrowserAcquisitions: l.allowedBrowserAcquisitions,
+          timeUntilNextAllowedBrowserAcquisition:
+            l.timeUntilNextAllowedBrowserAcquisition,
+        }),
+      );
+
+      if (
+        l.allowedBrowserAcquisitions === 0 ||
+        l.activeSessions.length >= l.maxConcurrentSessions
+      ) {
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil(l.timeUntilNextAllowedBrowserAcquisition / 1000),
+        );
+        console.warn(
+          JSON.stringify({
+            at: "browser.throttled",
+            requestId,
+            retryAfterSeconds,
+          }),
+        );
+        return jsonResponseWithRequestId(
+          {
+            error: "Browser Rendering throttled; retry later",
+            retryAfterSeconds,
+            limits: l,
+          },
+          requestId,
+          {
+            status: 429,
+            headers: {
+              "Retry-After": String(retryAfterSeconds),
+            },
+          },
+        );
+      }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.warn(
+        JSON.stringify({
+          at: "browser.limits.error",
+          requestId,
+          message,
+        }),
       );
     }
 
@@ -136,7 +232,17 @@ export default {
     const page = await context.newPage();
 
     try {
+      const gotoStarted = Date.now();
       const navResponse = await gotoWithRetries(page, targetUrl);
+      console.log(
+        JSON.stringify({
+          at: "page.goto.done",
+          requestId,
+          durationMs: Date.now() - gotoStarted,
+          finalUrl: navResponse ? navResponse.url() : page.url(),
+          status: navResponse ? navResponse.status() : null,
+        }),
+      );
 
       const html = await page.content();
       const title = await page.title();
@@ -167,7 +273,15 @@ export default {
         typeof headers["cf-ray"] === "string" ? headers["cf-ray"] : null;
 
       if (cfMitigated === "challenge" || looksLikeCloudflareChallenge(html)) {
-        return jsonResponse(
+        console.warn(
+          JSON.stringify({
+            at: "cf.challenge",
+            requestId,
+            cfMitigated,
+            cfRay,
+          }),
+        );
+        return jsonResponseWithRequestId(
           {
             error: "Cloudflare challenge page returned (bot mitigation)",
             url: targetUrl,
@@ -182,11 +296,19 @@ export default {
             html,
             headers,
           },
+          requestId,
           { status: 403 },
         );
       }
 
-      return jsonResponse(
+      console.log(
+        JSON.stringify({
+          at: "request.ok",
+          requestId,
+          durationMs: Date.now() - requestStarted,
+        }),
+      );
+      return jsonResponseWithRequestId(
         {
           url: targetUrl,
           finalUrl,
@@ -198,11 +320,24 @@ export default {
           h1s,
           metaDescription,
         },
+        requestId,
         { status: 200 },
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      return jsonResponse({ error: message }, { status: 500 });
+      const stack = err instanceof Error ? err.stack : undefined;
+      console.error(
+        JSON.stringify({
+          at: "request.error",
+          requestId,
+          message,
+          stack,
+          durationMs: Date.now() - requestStarted,
+        }),
+      );
+      return jsonResponseWithRequestId({ error: message }, requestId, {
+        status: 500,
+      });
     } finally {
       await context.close();
       await browser.close();
