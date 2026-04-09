@@ -7,6 +7,7 @@
   "description": "",
   "scripts": {
     "build": "tsc",
+    "dev": "CI=1 wrangler dev",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
