@@ -50,7 +50,7 @@ To generate a trace and open it in [Playwright Trace Viewer](https://trace.playw
 https://trace.playwright.dev/?trace=https://<your-worker>.workers.dev
 ```
 
-To download the trace, use the following URL:
+To download trace, use the following URL:
 
 ```
 https://<your-worker>.workers.dev?trace
